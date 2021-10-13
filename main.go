@@ -16,9 +16,15 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/parnurzeal/gorequest"
 	"github.com/tidwall/gjson"
+)
+
+const (
+	ATTEMPTS_TO_RETRIEVE_DOWNLOAD     = 10              // It will attempt 10 times before saying "Server is Busy"
+	TIME_BEFORE_CHECKING_IF_RETRIEVED = time.Second * 3 // waits 3 seconds "ATTEMPTS_TO_RETRIEVE_DOWNLOAD" time(s)
 )
 
 type WorkshopDownloader struct {
@@ -32,7 +38,7 @@ func (downloader *WorkshopDownloader) SetFolder(arg string) {
 		arg = arg[7:]
 	}
 	downloader.folder = arg
-	downloader.pathLabel.SetText("Path: " + arg)
+	downloader.pathLabel.SetText(filepath.Base(arg))
 }
 
 func (downloader *WorkshopDownloader) FolderSet() bool {
@@ -55,10 +61,10 @@ func (downloader *WorkshopDownloader) DownloadFile(idURL, url string) error {
 	defer file.Close()
 
 	resp, err := http.Get(url)
-	defer resp.Body.Close()
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 
 	_, err = io.Copy(file, resp.Body)
 	if err != nil {
@@ -69,7 +75,6 @@ func (downloader *WorkshopDownloader) DownloadFile(idURL, url string) error {
 }
 
 func (downloader *WorkshopDownloader) Unzip(id string) ([]string, error) {
-
 	defaultWorkingDIrectory, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -99,7 +104,6 @@ func (downloader *WorkshopDownloader) Unzip(id string) ([]string, error) {
 			os.MkdirAll(fpath, os.ModePerm)
 			continue
 		}
-
 		if err = os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
 			return filenames, err
 		}
@@ -127,7 +131,7 @@ func (downloader *WorkshopDownloader) Unzip(id string) ([]string, error) {
 }
 
 func (downloader *WorkshopDownloader) UpdateStatus(status string) {
-	downloader.updateLabel.SetText("Status: " + status)
+	downloader.updateLabel.SetText(status)
 }
 
 func (downloader *WorkshopDownloader) HandleDownload(_url string) error {
@@ -150,26 +154,26 @@ func (downloader *WorkshopDownloader) HandleDownload(_url string) error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("e: Unavaliable or server is Down")
 	} else {
-		downloader.UpdateStatus("Avaliable")
+		downloader.UpdateStatus("Item Avaliable")
 	}
 
+	// Download request //
 	uid := gjson.Get(body, "uuid").String()
 	var readyFile = false
-
-	for i := 0; i < 10; i++ {
+	for i := 0; i < ATTEMPTS_TO_RETRIEVE_DOWNLOAD; i++ {
 		_, body, _ := request.Post("https://backend-02-prd.steamworkshopdownloader.io/api/download/status").
 			Set("Content-Type", "application/json").
 			Send(`{"uuids": ["` + uid + `"]}`).
 			End()
 
-		downloader.UpdateStatus(strings.ToUpper(gjson.Get(body, uid+".status").String()))
+		downloader.UpdateStatus(strings.Title(gjson.Get(body, uid+".status").String()))
 
 		if strings.Contains(body, "prepared") {
 			readyFile = true
-			downloader.UpdateStatus("Downloading")
+			downloader.UpdateStatus("Initializing Download...")
 			break
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(TIME_BEFORE_CHECKING_IF_RETRIEVED)
 	}
 
 	if readyFile {
@@ -177,23 +181,23 @@ func (downloader *WorkshopDownloader) HandleDownload(_url string) error {
 		if err != nil {
 			return err
 		} else {
-			downloader.UpdateStatus("Downloaded, Trying to Unzip")
+			downloader.UpdateStatus("Trying to Decompress")
 			_, err := downloader.Unzip(idUrl)
 			if err != nil {
 				return err
 			}
-			downloader.UpdateStatus("Unzipped")
+			downloader.UpdateStatus("Successfuly Decompressed")
 			err = os.Remove(idUrl + ".zip")
 			if err != nil {
 				return err
 			}
-			downloader.UpdateStatus("Removed remaining ZIP.")
+			downloader.UpdateStatus("Download Finished")
 
 			return nil
 		}
 
 	} else {
-		return fmt.Errorf("e: FAIL THE SERVER IS BUSY")
+		return fmt.Errorf("e: Server is Busy")
 	}
 }
 
@@ -210,14 +214,21 @@ func FolderOpenHandler(win fyne.Window, downloader *WorkshopDownloader) func(fyn
 	}
 }
 
+func MakeDivisor(icon fyne.Resource, placeholder string, Lab *widget.Label) *fyne.Container {
+	return container.NewAdaptiveGrid(1, container.NewHBox(container.NewHBox(widget.NewIcon(icon), container.NewCenter(widget.NewLabel(placeholder+": ")), Lab)))
+}
+
 func main() {
 
 	var Downloader WorkshopDownloader
 
 	Application := app.New()
-	win := Application.NewWindow("Workshop Downloader")
-	win.Resize(fyne.NewSize(511.53848, 296.9231))
-
+	Application.Settings().SetTheme(theme.DarkTheme())
+	win := Application.NewWindow("Workshop Downloader (v0.2.2)")
+	win.Resize(fyne.NewSize(842.30774, 420.76926))
+	updateLabel := widget.NewLabel("Not Started")
+	pathLabel := widget.NewLabel("Not Specified")
+	timeLabel := widget.NewLabel("---")
 	URLInput := widget.NewEntry()
 	URLInput.PlaceHolder = "URL"
 
@@ -229,13 +240,22 @@ func main() {
 		OnSubmit: func() {
 			if URLInput.Text != "" {
 				if Downloader.FolderSet() {
+					URLInput.Disable()
+					timeLabel.SetText("...")
+					start := time.Now()
 					err := Downloader.HandleDownload(URLInput.Text)
 					if err != nil {
 						dialog.ShowError(err, win)
 						Downloader.UpdateStatus(err.Error())
+						timeLabel.SetText((time.Since(start)).String())
+						URLInput.Text = ""
+						URLInput.Enable()
 						return
 					}
-
+					timeLabel.SetText((time.Since(start)).String())
+					URLInput.Text = ""
+					URLInput.Enable()
+					timeLabel.SetText((time.Since(start)).String())
 				} else {
 					dialog.ShowError(fmt.Errorf("e: Download Folder not Specified"), win)
 				}
@@ -246,13 +266,13 @@ func main() {
 	}
 	form.Append("URL", URLInput)
 
-	updateLabel := widget.NewLabel("Status: Not Started")
-	pathLabel := widget.NewLabel("Path: Not Specified")
 	Downloader.SetPathLabel(pathLabel)
 	Downloader.SetUpdateLabel(updateLabel)
-
-	MainContainer := container.NewVSplit(form, container.NewCenter(container.NewAdaptiveGrid(1, container.NewCenter(updateLabel), container.NewCenter(pathLabel))))
-
+	MainContainer := container.NewVSplit(form,
+		container.NewCenter(container.NewAdaptiveGrid(1,
+			MakeDivisor(theme.InfoIcon(), "Status", updateLabel),
+			MakeDivisor(theme.FolderIcon(), "Folder", pathLabel),
+			MakeDivisor(theme.DownloadIcon(), "Time Taken", timeLabel))))
 	win.SetContent(MainContainer)
 	win.ShowAndRun()
 }
