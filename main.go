@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +25,7 @@ import (
 
 const (
 	ATTEMPTS_TO_RETRIEVE_DOWNLOAD     = 10              // It will attempt 10 times before saying "Server is Busy"
-	TIME_BEFORE_CHECKING_IF_RETRIEVED = time.Second * 3 // waits 3 seconds "ATTEMPTS_TO_RETRIEVE_DOWNLOAD" time(s)
+	TIME_BEFORE_CHECKING_IF_RETRIEVED = time.Second * 3 // waits 3 seconds each attempt
 )
 
 type WorkshopDownloader struct {
@@ -134,12 +135,7 @@ func (downloader *WorkshopDownloader) UpdateStatus(status string) {
 	downloader.updateLabel.SetText(status)
 }
 
-func (downloader *WorkshopDownloader) HandleDownload(_url string) error {
-	url, err := url.ParseRequestURI(_url)
-	if err != nil {
-		return fmt.Errorf("e: Invalid URL")
-	}
-
+func (downloader *WorkshopDownloader) HandleDownload(url *url.URL) error {
 	idUrl := url.Query().Get("id")
 	if idUrl == "" {
 		return fmt.Errorf("e: Invalid URL")
@@ -215,35 +211,73 @@ func FolderOpenHandler(win fyne.Window, downloader *WorkshopDownloader) func(fyn
 }
 
 func MakeDivisor(icon fyne.Resource, placeholder string, Lab *widget.Label) *fyne.Container {
-	return container.NewAdaptiveGrid(1, container.NewHBox(container.NewHBox(widget.NewIcon(icon), container.NewCenter(widget.NewLabel(placeholder+": ")), Lab)))
+	return container.NewAdaptiveGrid(1, container.NewHBox(container.NewHBox(widget.NewIcon(icon), (widget.NewLabel(placeholder+": ")), Lab)))
+	// return container.NewAdaptiveGrid(1, container.NewHBox(container.NewHBox(widget.NewIcon(icon), container.NewCenter(widget.NewLabel(placeholder+": ")), Lab)))
+}
+
+func ValidURL(URL string) (bool, *url.URL) {
+	if URL != "" {
+		if _, err := strconv.Atoi(URL); err == nil {
+			URL = "https://steamcommunity.com/sharedfiles/filedetails/?id=" + URL
+		}
+		ParsedURL, err := url.ParseRequestURI(URL)
+		if err != nil {
+			return false, nil
+		}
+		if strings.ToLower(ParsedURL.Host) == "steamcommunity.com" {
+			return true, ParsedURL
+		} else {
+			return false, nil
+		}
+	} else {
+		return false, nil
+	}
 }
 
 func main() {
-
 	var Downloader WorkshopDownloader
+	//var ClipboardContents *string
 
 	Application := app.New()
 	Application.Settings().SetTheme(theme.DarkTheme())
-	win := Application.NewWindow("Workshop Downloader (v0.2.2)")
-	win.Resize(fyne.NewSize(842.30774, 420.76926))
+	win := Application.NewWindow("Workshop Downloader (v0.2.3)")
+	win.Resize(fyne.NewSize(843, 421))
+	win.CenterOnScreen()
+	UpdatesTextStyle := fyne.TextStyle{Bold: true, Italic: false, Monospace: false}
+
+	// Update Labels
 	updateLabel := widget.NewLabel("Not Started")
 	pathLabel := widget.NewLabel("Not Specified")
 	timeLabel := widget.NewLabel("---")
-	URLInput := widget.NewEntry()
-	URLInput.PlaceHolder = "URL"
+	ItemID := widget.NewLabel("Not Specified")
 
+	// Style
+	updateLabel.Alignment = fyne.TextAlignTrailing
+	updateLabel.TextStyle = UpdatesTextStyle
+	pathLabel.Alignment = fyne.TextAlignTrailing
+	pathLabel.TextStyle = UpdatesTextStyle
+	timeLabel.Alignment = fyne.TextAlignTrailing
+	timeLabel.TextStyle = UpdatesTextStyle
+	ItemID.Alignment = fyne.TextAlignTrailing
+	ItemID.TextStyle = UpdatesTextStyle
+
+	URLInput := widget.NewEntry()
+	URLInput.PlaceHolder = "URL or Item ID"
 	form := &widget.Form{
 		Items: []*widget.FormItem{
 			{Text: "Download Path", Widget: widget.NewButton("Choose", func() {
 				dialog.ShowFolderOpen(FolderOpenHandler(win, &Downloader), win)
 			})}},
 		OnSubmit: func() {
-			if URLInput.Text != "" {
-				if Downloader.FolderSet() {
+
+			if Downloader.FolderSet() {
+				IsValid, ParsedURL := ValidURL(URLInput.Text)
+				if IsValid {
 					URLInput.Disable()
 					timeLabel.SetText("...")
 					start := time.Now()
-					err := Downloader.HandleDownload(URLInput.Text)
+					ItemID.SetText(ParsedURL.Query().Get("id"))
+					err := Downloader.HandleDownload(ParsedURL)
 					if err != nil {
 						dialog.ShowError(err, win)
 						Downloader.UpdateStatus(err.Error())
@@ -257,10 +291,10 @@ func main() {
 					URLInput.Enable()
 					timeLabel.SetText((time.Since(start)).String())
 				} else {
-					dialog.ShowError(fmt.Errorf("e: Download Folder not Specified"), win)
+					dialog.ShowError(fmt.Errorf("e: Invalid URL"), win)
 				}
 			} else {
-				dialog.ShowError(fmt.Errorf("e: Invalid URL"), win)
+				dialog.ShowError(fmt.Errorf("e: Download Folder not Specified"), win)
 			}
 		},
 	}
@@ -272,7 +306,9 @@ func main() {
 		container.NewCenter(container.NewAdaptiveGrid(1,
 			MakeDivisor(theme.InfoIcon(), "Status", updateLabel),
 			MakeDivisor(theme.FolderIcon(), "Folder", pathLabel),
-			MakeDivisor(theme.DownloadIcon(), "Time Taken", timeLabel))))
+			MakeDivisor(theme.DownloadIcon(), "Time Taken", timeLabel),
+			MakeDivisor(theme.DocumentIcon(), "Item ID", ItemID))))
 	win.SetContent(MainContainer)
+
 	win.ShowAndRun()
 }
